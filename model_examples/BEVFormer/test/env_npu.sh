@@ -1,12 +1,13 @@
 #!/bin/bash
-msnpureport -g error -d 0
-msnpureport -g error -d 1
-msnpureport -g error -d 2
-msnpureport -g error -d 3
-msnpureport -g error -d 4
-msnpureport -g error -d 5
-msnpureport -g error -d 6
-msnpureport -g error -d 7
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+# msnpureport -g error -d 0
+# msnpureport -g error -d 1
+# msnpureport -g error -d 2
+# msnpureport -g error -d 3
+# msnpureport -g error -d 4
+# msnpureport -g error -d 5
+# msnpureport -g error -d 6
+# msnpureport -g error -d 7
 
 #将Host日志输出到串口,0-关闭/1-开启
 export ASCEND_SLOG_PRINT_TO_STDOUT=0

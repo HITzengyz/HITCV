@@ -1,10 +1,11 @@
-numpy==1.23
+numpy>=1.23.5,<2.0
 protobuf==4.25.8
 decorator
 sympy 
 scipy 
 attrs 
 cloudpickle
+ml-dtypes
 psutil
 synr==0.5.0
 tornado

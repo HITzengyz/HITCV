@@ -45,6 +45,7 @@ if(BUILD_STAGE EQUAL 2)
             $<$<CONFIG:Debug>:-O0
             -g>
             -fstack-protector-all
+            -D__FILENAME__=__FILE__
             -DTORCH_API_INCLUDE_EXTENSION_H
             -DTORCH_EXTENSION_NAME=_C
             -D_GLIBCXX_USE_CXX11_ABI=${ABI}
