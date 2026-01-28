@@ -6,3 +6,4 @@ build
 *.egg-info/
 .vscode/
 CMakeFiles
+/model_examples/Deformable-DETR/data/
