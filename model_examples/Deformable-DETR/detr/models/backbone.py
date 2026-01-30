@@ -105,6 +105,22 @@ class Backbone(BackboneBase):
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=is_main_process(), norm_layer=norm_layer)
+        if backbone.conv1.in_channels != 5:
+            old_conv = backbone.conv1
+            new_conv = nn.Conv2d(
+                5,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=old_conv.bias is not None,
+            )
+            with torch.no_grad():
+                new_conv.weight.zero_()
+                new_conv.weight[:, : old_conv.in_channels, :, :].copy_(old_conv.weight)
+                if old_conv.bias is not None:
+                    new_conv.bias.copy_(old_conv.bias)
+            backbone.conv1 = new_conv
         assert name not in ('resnet18', 'resnet34'), "number of channels are hard coded"
         super().__init__(backbone, train_backbone, return_interm_layers)
         if dilation:

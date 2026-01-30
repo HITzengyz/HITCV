@@ -127,6 +127,12 @@ def get_args_parser():
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
+    parser.add_argument('--tir_dropout', default=0.3, type=float,
+                        help='Modality dropout probability for TIR (train only)')
+    parser.add_argument('--tir_mean', default=0.5, type=float,
+                        help='Normalization mean for TIR channel')
+    parser.add_argument('--tir_std', default=0.5, type=float,
+                        help='Normalization std for TIR channel')
 
     return parser
 

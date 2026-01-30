@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 import torch.utils.data
 from pycocotools import mask as coco_mask
+from PIL import Image
 
 from .torchvision_datasets import CocoDetection as TvCocoDetection
 from util.misc import get_local_rank, get_local_size
@@ -35,6 +36,22 @@ class CocoDetection(TvCocoDetection):
         image_id = self.ids[idx]
         target = {'image_id': image_id, 'annotations': target}
         img, target = self.prepare(img, target)
+        img_info = self.coco.loadImgs(image_id)[0]
+        tir = None
+        tir_valid = 0.0
+        tir_file = img_info.get("tir_file")
+        if tir_file:
+            try:
+                tir = self.get_tir(tir_file)
+                if tir is not None:
+                    if tir.size != img.size:
+                        tir = tir.resize(img.size, resample=Image.BILINEAR)
+                    tir_valid = 1.0
+            except Exception:
+                tir = None
+                tir_valid = 0.0
+        target["tir"] = tir
+        target["tir_valid"] = torch.tensor(tir_valid, dtype=torch.float32)
         if self._transforms is not None:
             img, target = self._transforms(img, target)
         return img, target
@@ -122,11 +139,21 @@ class ConvertCocoPolysToMask(object):
         return image, target
 
 
-def make_coco_transforms(image_set):
+def make_coco_transforms(image_set, args=None):
+
+    if args is None:
+        tir_mean = 0.5
+        tir_std = 0.5
+        tir_dropout = 0.3
+    else:
+        tir_mean = float(getattr(args, "tir_mean", 0.5))
+        tir_std = float(getattr(args, "tir_std", 0.5))
+        tir_dropout = float(getattr(args, "tir_dropout", 0.3))
 
     normalize = T.Compose([
         T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        T.Normalize([0.485, 0.456, 0.406, tir_mean, 0.0],
+                    [0.229, 0.224, 0.225, tir_std, 1.0])
     ])
 
     scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
@@ -142,6 +169,7 @@ def make_coco_transforms(image_set):
                 ])
             ),
             T.RandomResize(scales, max_size=1333),
+            T.ModalityDropout(p=tir_dropout),
             normalize,
         ])
 
@@ -164,6 +192,6 @@ def build(image_set, args):
     }
 
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set), return_masks=args.masks,
+    dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set, args), return_masks=args.masks,
                             cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size())
     return dataset

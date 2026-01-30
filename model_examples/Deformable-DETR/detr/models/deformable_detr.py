@@ -19,7 +19,8 @@ import torch_npu
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
-                       is_dist_avail_and_initialized, inverse_sigmoid)
+                       is_dist_avail_and_initialized, inverse_sigmoid,
+                       is_main_process)
 
 from .backbone import build_backbone
 from .matcher import build_matcher
@@ -83,6 +84,7 @@ class DeformableDETR(nn.Module):
         self.aux_loss = aux_loss
         self.with_box_refine = with_box_refine
         self.two_stage = two_stage
+        self._logged_input_shape = False
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -129,6 +131,10 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
+        assert samples.tensors.shape[1] == 5, f"expected 5-channel input, got {samples.tensors.shape[1]}"
+        if not self._logged_input_shape and is_main_process():
+            print(f"Input tensor shape: {tuple(samples.tensors.shape)}")
+            self._logged_input_shape = True
         features, pos = self.backbone(samples)
 
         srcs = []

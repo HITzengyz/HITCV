@@ -48,6 +48,9 @@ def crop(image, target, region):
         target['masks'] = target['masks'][:, i:i + h, j:j + w]
         fields.append("masks")
 
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.crop(target["tir"], *region)
+
     # remove elements for which the boxes or masks that have zero area
     if "boxes" in target or "masks" in target:
         # favor boxes selection when defining which elements to keep
@@ -77,6 +80,9 @@ def hflip(image, target):
 
     if "masks" in target:
         target['masks'] = target['masks'].flip(-1)
+
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.hflip(target["tir"])
 
     return flipped_image, target
 
@@ -137,6 +143,9 @@ def resize(image, target, size, max_size=None):
         target['masks'] = interpolate(
             target['masks'][:, None].float(), size, mode="nearest")[:, 0] > 0.5
 
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.resize(target["tir"], size)
+
     return rescaled_image, target
 
 
@@ -150,6 +159,8 @@ def pad(image, target, padding):
     target["size"] = torch.tensor(padded_image[::-1])
     if "masks" in target:
         target['masks'] = torch.nn.functional.pad(target['masks'], (0, padding[0], 0, padding[1]))
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.pad(target["tir"], (0, 0, padding[0], padding[1]))
     return padded_image, target
 
 
@@ -247,6 +258,11 @@ class RandomSelect(object):
 
 class ToTensor(object):
     def __call__(self, img, target):
+        if target is None:
+            return F.to_tensor(img), target
+        target = target.copy()
+        if "tir" in target and target["tir"] is not None and not torch.is_tensor(target["tir"]):
+            target["tir"] = F.to_tensor(target["tir"])
         return F.to_tensor(img), target
 
 
@@ -259,12 +275,46 @@ class RandomErasing(object):
         return self.eraser(img), target
 
 
+class ModalityDropout(object):
+    def __init__(self, p=0.3):
+        self.p = p
+
+    def __call__(self, img, target):
+        if target is None or self.p <= 0:
+            return img, target
+        if "tir" in target and target["tir"] is not None and random.random() < self.p:
+            target = target.copy()
+            tir = target["tir"]
+            if torch.is_tensor(tir):
+                target["tir"] = torch.zeros_like(tir)
+                target["tir_valid"] = torch.tensor(0.0, dtype=tir.dtype, device=tir.device)
+            else:
+                target["tir"] = PIL.Image.new("L", img.size, 0)
+                target["tir_valid"] = torch.tensor(0.0)
+        return img, target
+
+
 class Normalize(object):
     def __init__(self, mean, std):
         self.mean = mean
         self.std = std
 
     def __call__(self, image, target=None):
+        if target is not None and ("tir" in target or "tir_valid" in target):
+            target = target.copy()
+            tir = target.pop("tir", None)
+            if tir is None:
+                h, w = image.shape[-2:]
+                tir = torch.zeros((1, h, w), dtype=image.dtype, device=image.device)
+            tir_valid = target.pop("tir_valid", None)
+            if tir_valid is None:
+                tir_valid = torch.tensor(1.0, dtype=image.dtype, device=image.device)
+            if not torch.is_tensor(tir_valid):
+                tir_valid = torch.tensor(float(tir_valid), dtype=image.dtype, device=image.device)
+            h, w = image.shape[-2:]
+            tir_valid_map = torch.full((1, h, w), float(tir_valid.item()),
+                                       dtype=image.dtype, device=image.device)
+            image = torch.cat([image, tir, tir_valid_map], dim=0)
         image = F.normalize(image, mean=self.mean, std=self.std)
         if target is None:
             return image, None
