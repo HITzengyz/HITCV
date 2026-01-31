@@ -25,11 +25,12 @@ import datasets.transforms as T
 
 
 class CocoDetection(TvCocoDetection):
-    def __init__(self, img_folder, ann_file, transforms, return_masks, cache_mode=False, local_rank=0, local_size=1):
+    def __init__(self, img_folder, ann_file, transforms, return_masks, cache_mode=False, local_rank=0, local_size=1, tir_root=None):
         super(CocoDetection, self).__init__(img_folder, ann_file,
                                             cache_mode=cache_mode, local_rank=local_rank, local_size=local_size)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
+        self.tir_root = Path(tir_root) if tir_root is not None else None
 
     def __getitem__(self, idx):
         img, target = super(CocoDetection, self).__getitem__(idx)
@@ -40,6 +41,10 @@ class CocoDetection(TvCocoDetection):
         tir = None
         tir_valid = 0.0
         tir_file = img_info.get("tir_file")
+        if not tir_file and self.tir_root is not None:
+            candidate = self.tir_root / img_info.get("file_name", "")
+            if candidate.is_file():
+                tir_file = str(candidate)
         if tir_file:
             try:
                 tir = self.get_tir(tir_file)
@@ -186,12 +191,32 @@ def build(image_set, args):
     root = Path(args.coco_path)
     assert root.exists(), f'provided COCO path {root} does not exist'
     mode = 'instances'
-    PATHS = {
-        "train": (root / "train2017", root / "annotations" / f'{mode}_train2017.json'),
-        "val": (root / "val2017", root / "annotations" / f'{mode}_val2017.json'),
-    }
+    coco_ann_dir = root / "annotations"
+    coco_train = coco_ann_dir / f'{mode}_train2017.json'
+    coco_val = coco_ann_dir / f'{mode}_val2017.json'
+    waterscenes_train = root / "instances_train.json"
+    waterscenes_val = root / "instances_val.json"
+    tir_root = root / "CAM_IR"
+    if coco_train.exists():
+        PATHS = {
+            "train": (root / "train2017", coco_train),
+            "val": (root / "val2017", coco_val),
+        }
+        if not tir_root.exists():
+            tir_root = None
+    elif waterscenes_train.exists() and (root / "image").exists():
+        PATHS = {
+            "train": (root / "image", waterscenes_train),
+            "val": (root / "image", waterscenes_val if waterscenes_val.exists() else waterscenes_train),
+        }
+    else:
+        raise FileNotFoundError(
+            "Unsupported COCO layout. Expected either COCO-2017 layout "
+            "or waterscenes-coco layout with image/ and instances_train.json."
+        )
 
     img_folder, ann_file = PATHS[image_set]
     dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set, args), return_masks=args.masks,
-                            cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size())
+                            cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size(),
+                            tir_root=tir_root)
     return dataset
