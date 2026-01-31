@@ -1,7 +1,12 @@
   服务器上运行示例：
 
-  cd /root/autodl-tmp/DrivingSDK/model_examples/Deformable-DETR/detr                                                                                               
-                                                                                                                                                                   
+  cd /root/autodl-tmp/DrivingSDK/model_examples/Deformable-DETR/detr
+  训练：
+  cd /root/autodl-tmp/DrivingSDK/model_examples/Deformable-DETR/detr
+    bash test/train_8p_full.sh --data_path=/root/autodl-tmp/DrivingSDK/model_examples/Deformable-DETR/data/waterscenes-coco --epochs=1 --batch_size=10 --nproc_per_node=1                                                                                                   
+                                                                                                                                                        推理：
+cd /root/autodl-tmp/DrivingSDK/model_examples/Deformable-DETR/detr
+
  python3 test/infer_visualize_rgb_tir.py --img_name 00098.jpg --data_root /root/autodl-tmp/DrivingSDK/model_examples/Deformable-DETR/data/waterscenes-coco        
   --ckpt /root/autodl-tmp/DrivingSDK/model_examples/Deformable-DETR/detr/test/output/checkpoint.pth --score_thr 0.3 --out_dir /root/autodl-tmp/DrivingSDK/         
   model_examples/Deformable-DETR/detr/result   
