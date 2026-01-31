@@ -13,6 +13,7 @@ COCO dataset which returns image_id for evaluation.
 Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references/detection/coco_utils.py
 """
 from pathlib import Path
+import os
 
 import torch
 import torch.utils.data
@@ -31,6 +32,22 @@ class CocoDetection(TvCocoDetection):
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
         self.tir_root = Path(tir_root) if tir_root is not None else None
+        self._filter_missing_images()
+
+    def _filter_missing_images(self):
+        missing = 0
+        valid_ids = []
+        for img_id in self.ids:
+            info = self.coco.loadImgs(img_id)[0]
+            file_name = info.get("file_name", "")
+            img_path = file_name if os.path.isabs(file_name) else os.path.join(self.root, file_name)
+            if os.path.isfile(img_path):
+                valid_ids.append(img_id)
+            else:
+                missing += 1
+        if missing:
+            self.ids = valid_ids
+            print(f"[WARN] Filtered {missing} missing images from dataset.")
 
     def __getitem__(self, idx):
         img, target = super(CocoDetection, self).__getitem__(idx)
