@@ -8,4 +8,4 @@
 - [x] Add forward/input shape assertion for [5, H, W]
 - [x] Add unit/script checks for shape/range/tir_valid logic
 - [x] Add missing-TIR inference test (no crash)
-- [ ] Run 1-epoch smoke test and record log/visual proof of 5-channel input
+- [x] Run 1-epoch smoke test and record log/visual proof of 5-channel input
