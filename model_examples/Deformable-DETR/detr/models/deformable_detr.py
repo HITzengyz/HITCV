@@ -347,10 +347,13 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        handle.wait()
-        with torch.cuda.stream(s):
-            s.wait_stream(torch.cuda.default_stream())
-            num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
+        if handle is not None and s is not None:
+            handle.wait()
+            with torch.cuda.stream(s):
+                s.wait_stream(torch.cuda.default_stream())
+                num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
+        else:
+            num_boxes = max(float(num_boxes.item()), 1.0)
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -400,6 +403,8 @@ class SetCriterion(nn.Module):
     def get_num_boxes(self, targets, device):
         num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=device)
+        handle = None
+        s = None
         if is_dist_avail_and_initialized():
             s = torch.cuda.Stream()
             handle = torch.distributed.all_reduce(num_boxes, async_op=True)
