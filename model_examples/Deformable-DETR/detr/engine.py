@@ -23,6 +23,18 @@ from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
 
 
+def _to_device(value, device):
+    if torch.is_tensor(value):
+        return value.to(device, non_blocking=True)
+    if isinstance(value, dict):
+        return {k: _to_device(v, device) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_device(v, device) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_to_device(v, device) for v in value)
+    return value
+
+
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
@@ -119,7 +131,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        targets = [_to_device(t, device) for t in targets]
 
         num_boxes, handle, s = criterion.get_num_boxes(targets, device)
         outputs = model(samples)
