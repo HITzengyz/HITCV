@@ -6,9 +6,21 @@
 
 import torch
 
+def _to_device(value, device):
+    if torch.is_tensor(value):
+        return value.to(device, non_blocking=True)
+    if isinstance(value, dict):
+        return {k: _to_device(v, device) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_device(v, device) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_to_device(v, device) for v in value)
+    return value
+
+
 def to_cuda(samples, targets, device):
     samples = samples.to(device, non_blocking=True)
-    targets = [{k: v.to(device, non_blocking=True) for k, v in t.items()} for t in targets]
+    targets = [_to_device(t, device) for t in targets]
     return samples, targets
 
 class data_prefetcher():
@@ -49,6 +61,19 @@ class data_prefetcher():
             # else:
 
     def next(self):
+        def _record_stream(value):
+            if torch.is_tensor(value):
+                value.record_stream(torch.cuda.current_stream())
+                return
+            if isinstance(value, dict):
+                for vv in value.values():
+                    _record_stream(vv)
+                return
+            if isinstance(value, (list, tuple)):
+                for vv in value:
+                    _record_stream(vv)
+                return
+
         if self.prefetch:
             torch.cuda.current_stream().wait_stream(self.stream)
             samples = self.next_samples
@@ -57,8 +82,7 @@ class data_prefetcher():
                 samples.record_stream(torch.cuda.current_stream())
             if targets is not None:
                 for t in targets:
-                    for k, v in t.items():
-                        v.record_stream(torch.cuda.current_stream())
+                    _record_stream(t)
             self.preload()
         else:
             try:

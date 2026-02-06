@@ -100,15 +100,16 @@ class Backbone(BackboneBase):
     def __init__(self, name: str,
                  train_backbone: bool,
                  return_interm_layers: bool,
-                 dilation: bool):
+                 dilation: bool,
+                 in_channels: int = 5):
         norm_layer = FrozenBatchNorm2d
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=is_main_process(), norm_layer=norm_layer)
-        if backbone.conv1.in_channels != 5:
+        if backbone.conv1.in_channels != in_channels:
             old_conv = backbone.conv1
             new_conv = nn.Conv2d(
-                5,
+                in_channels,
                 old_conv.out_channels,
                 kernel_size=old_conv.kernel_size,
                 stride=old_conv.stride,
@@ -151,6 +152,7 @@ def build_backbone(args):
     position_embedding = build_position_encoding(args)
     train_backbone = args.lr_backbone > 0
     return_interm_layers = args.masks or (args.num_feature_levels > 1)
-    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
+    in_channels = int(getattr(args, "in_channels", 5))
+    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation, in_channels=in_channels)
     model = Joiner(backbone, position_embedding)
     return model

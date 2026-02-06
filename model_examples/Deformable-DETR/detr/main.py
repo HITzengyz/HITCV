@@ -133,6 +133,18 @@ def get_args_parser():
                         help='Normalization mean for TIR channel')
     parser.add_argument('--tir_std', default=0.5, type=float,
                         help='Normalization std for TIR channel')
+    parser.add_argument('--radar_channels', default=4, type=int,
+                        help='Number of radar REVP channels')
+    parser.add_argument('--radar_dropout', default=0.3, type=float,
+                        help='Modality dropout probability for Radar (train only)')
+    parser.add_argument('--radar_mean', default=[0.0, 0.0, 0.0, 0.0], type=float, nargs='+',
+                        help='Normalization mean for radar channels')
+    parser.add_argument('--radar_std', default=[1.0, 1.0, 1.0, 1.0], type=float, nargs='+',
+                        help='Normalization std for radar channels')
+    parser.add_argument('--use_waterscenes_modalities', default=False, action='store_true',
+                        help='Enable WaterScenes-local multimodality fusion contract')
+    parser.add_argument('--in_channels', default=5, type=int,
+                        help='Expected fused input channels for backbone/model assertions')
 
     return parser
 
@@ -162,6 +174,13 @@ def main(args):
 
     dataset_train = build_dataset(image_set='train', args=args)
     dataset_val = build_dataset(image_set='val', args=args)
+    print(
+        "[FusionConfig] "
+        f"modality_order={getattr(args, 'modality_order', ['rgb', 'tir', 'tir_valid'])}, "
+        f"fused_channels={int(getattr(args, 'in_channels', 5))}, "
+        f"tir_valid_idx={int(getattr(args, 'tir_valid_channel_idx', 4))}, "
+        f"radar_valid_idx={int(getattr(args, 'radar_valid_channel_idx', -1))}"
+    )
 
     if args.distributed:
         if args.cache_mode:
@@ -286,6 +305,10 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
+        if hasattr(dataset_train, "set_epoch"):
+            dataset_train.set_epoch(epoch)
+        if hasattr(dataset_val, "set_epoch"):
+            dataset_val.set_epoch(epoch)
         train_stats = train_one_epoch(
             model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
         lr_scheduler.step()

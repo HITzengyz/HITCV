@@ -13,6 +13,8 @@ COCO dataset which returns image_id for evaluation.
 Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references/detection/coco_utils.py
 """
 from pathlib import Path
+import csv
+import math
 import os
 
 import torch
@@ -26,12 +28,32 @@ import datasets.transforms as T
 
 
 class CocoDetection(TvCocoDetection):
-    def __init__(self, img_folder, ann_file, transforms, return_masks, cache_mode=False, local_rank=0, local_size=1, tir_root=None):
+    def __init__(
+        self,
+        img_folder,
+        ann_file,
+        transforms,
+        return_masks,
+        cache_mode=False,
+        local_rank=0,
+        local_size=1,
+        tir_root=None,
+        radar_root=None,
+        calib_root=None,
+        waterscenes_mode=False,
+        radar_channels=4,
+    ):
         super(CocoDetection, self).__init__(img_folder, ann_file,
                                             cache_mode=cache_mode, local_rank=local_rank, local_size=local_size)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
         self.tir_root = Path(tir_root) if tir_root is not None else None
+        self.radar_root = Path(radar_root) if radar_root is not None else None
+        self.calib_root = Path(calib_root) if calib_root is not None else None
+        self.waterscenes_mode = bool(waterscenes_mode)
+        self.radar_channels = int(radar_channels)
+        self._epoch = -1
+        self._warned_once = set()
         self._filter_missing_images()
 
     def _filter_missing_images(self):
@@ -49,19 +71,164 @@ class CocoDetection(TvCocoDetection):
             self.ids = valid_ids
             print(f"[WARN] Filtered {missing} missing images from dataset.")
 
-    def __getitem__(self, idx):
-        img, target = super(CocoDetection, self).__getitem__(idx)
-        image_id = self.ids[idx]
-        target = {'image_id': image_id, 'annotations': target}
-        img, target = self.prepare(img, target)
-        img_info = self.coco.loadImgs(image_id)[0]
+    def set_epoch(self, epoch):
+        epoch = int(epoch)
+        if epoch != self._epoch:
+            self._epoch = epoch
+            self._warned_once.clear()
+
+    def _warn_once(self, tag, message):
+        key = (self._epoch, tag)
+        if key in self._warned_once:
+            return
+        self._warned_once.add(key)
+        print(f"[WARN] {message}")
+
+    def _resolve_optional_path(self, value, fallback):
+        if value:
+            p = Path(value)
+            if p.is_file():
+                return str(p)
+            p2 = Path(self.root) / p
+            if p2.is_file():
+                return str(p2)
+            return None
+        if fallback is not None and Path(fallback).is_file():
+            return str(fallback)
+        return None
+
+    def _parse_calib_matrix(self, calib_path):
+        extrinsic = None
+        intrinsic = None
+        with open(calib_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or ":" not in line:
+                    continue
+                name, values = line.split(":", 1)
+                nums = [float(x) for x in values.strip().split()]
+                if name.strip() == "t_camera_radar":
+                    if len(nums) != 16:
+                        raise ValueError(f"invalid t_camera_radar len={len(nums)}")
+                    extrinsic = torch.tensor(nums, dtype=torch.float32).view(4, 4)
+                elif name.strip() == "t_camera_intrinsic":
+                    if len(nums) == 9:
+                        intrinsic = torch.tensor(nums, dtype=torch.float32).view(3, 3)
+                    elif len(nums) == 12:
+                        k34 = torch.tensor(nums, dtype=torch.float32).view(3, 4)
+                        if not torch.allclose(k34[:, 3], torch.zeros(3), atol=1e-6):
+                            raise ValueError("t_camera_intrinsic 3x4 last column is non-zero")
+                        intrinsic = k34[:, :3]
+                    else:
+                        raise ValueError(f"invalid t_camera_intrinsic len={len(nums)}")
+        if extrinsic is None or intrinsic is None:
+            raise ValueError("missing required calibration matrices")
+        return extrinsic, intrinsic
+
+    def _load_radar_points(self, radar_path):
+        required = {"x", "y", "z", "doppler", "power"}
+        points = []
+        with open(radar_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                raise ValueError("empty radar csv")
+            cols = {c.strip() for c in reader.fieldnames}
+            missing = sorted(required - cols)
+            if missing:
+                raise ValueError(f"missing radar columns: {missing}")
+            for row in reader:
+                try:
+                    x = float(row["x"])
+                    y = float(row["y"])
+                    z = float(row["z"])
+                    d = float(row["doppler"])
+                    p = float(row["power"])
+                except Exception:
+                    continue
+                if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z) and math.isfinite(d) and math.isfinite(p)):
+                    continue
+                points.append((x, y, z, d, p))
+        if not points:
+            raise ValueError("no valid radar points")
+        return torch.tensor(points, dtype=torch.float32)
+
+    def _build_radar_map(self, radar_points, t_camera_radar, k, width, height):
+        radar_xyz = radar_points[:, :3]
+        doppler = radar_points[:, 3]
+        power = radar_points[:, 4]
+
+        n = radar_xyz.shape[0]
+        ones = torch.ones((n, 1), dtype=torch.float32)
+        xyz1 = torch.cat([radar_xyz, ones], dim=1)
+        cam_xyz1 = torch.matmul(t_camera_radar, xyz1.t()).t()
+        cam_xyz = cam_xyz1[:, :3]
+
+        z = cam_xyz[:, 2]
+        positive_depth = z > 1e-6
+        if not torch.any(positive_depth):
+            return torch.zeros((self.radar_channels, height, width), dtype=torch.float32), True
+
+        cam_xyz = cam_xyz[positive_depth]
+        doppler = doppler[positive_depth]
+        power = power[positive_depth]
+
+        uvw = torch.matmul(k, cam_xyz.t()).t()
+        w = uvw[:, 2]
+        valid_w = w.abs() > 1e-6
+        if not torch.any(valid_w):
+            return torch.zeros((self.radar_channels, height, width), dtype=torch.float32), True
+
+        uvw = uvw[valid_w]
+        cam_xyz = cam_xyz[valid_w]
+        doppler = doppler[valid_w]
+        power = power[valid_w]
+        u = uvw[:, 0] / uvw[:, 2]
+        v = uvw[:, 1] / uvw[:, 2]
+
+        in_bounds = (
+            torch.isfinite(u) & torch.isfinite(v) &
+            (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        )
+        if not torch.any(in_bounds):
+            return torch.zeros((self.radar_channels, height, width), dtype=torch.float32), True
+
+        u = u[in_bounds].long()
+        v = v[in_bounds].long()
+        cam_xyz = cam_xyz[in_bounds]
+        doppler = doppler[in_bounds]
+        power = power[in_bounds]
+        cam_range = torch.linalg.norm(cam_xyz, dim=1)
+
+        occ = torch.zeros((height, width), dtype=torch.float32)
+        range_min = torch.full((height, width), float("inf"), dtype=torch.float32)
+        doppler_sum = torch.zeros((height, width), dtype=torch.float32)
+        doppler_count = torch.zeros((height, width), dtype=torch.float32)
+        power_max = torch.zeros((height, width), dtype=torch.float32)
+
+        for i in range(u.shape[0]):
+            x = u[i].item()
+            y = v[i].item()
+            occ[y, x] = 1.0
+            r = cam_range[i].item()
+            if r < range_min[y, x]:
+                range_min[y, x] = r
+            doppler_sum[y, x] += doppler[i]
+            doppler_count[y, x] += 1.0
+            power_max[y, x] = max(power_max[y, x].item(), power[i].item())
+
+        range_map = torch.where(torch.isfinite(range_min), range_min, torch.zeros_like(range_min))
+        doppler_mean = torch.where(doppler_count > 0, doppler_sum / doppler_count, torch.zeros_like(doppler_sum))
+
+        radar_channels = torch.stack([occ, range_map, doppler_mean, power_max], dim=0)
+        return radar_channels, True
+
+    def _load_tir_with_valid(self, img_info, image_id, img):
         tir = None
         tir_valid = 0.0
-        tir_file = img_info.get("tir_file")
-        if not tir_file and self.tir_root is not None:
-            candidate = self.tir_root / img_info.get("file_name", "")
-            if candidate.is_file():
-                tir_file = str(candidate)
+        tir_file = self._resolve_optional_path(
+            img_info.get("tir_file"),
+            self.tir_root / img_info.get("file_name", "") if self.tir_root is not None else None,
+        )
         if tir_file:
             try:
                 tir = self.get_tir(tir_file)
@@ -69,11 +236,78 @@ class CocoDetection(TvCocoDetection):
                     if tir.size != img.size:
                         tir = tir.resize(img.size, resample=Image.BILINEAR)
                     tir_valid = 1.0
-            except Exception:
+            except Exception as exc:
+                self._warn_once(
+                    "tir-read-failed",
+                    f"TIR read failed for image_id={image_id}, file={tir_file}; fallback to zeros (tir_valid=0). err={exc}",
+                )
                 tir = None
                 tir_valid = 0.0
+        return tir, torch.tensor(tir_valid, dtype=torch.float32)
+
+    def _load_radar_with_valid(self, img_info, image_id, width, height):
+        radar = torch.zeros((self.radar_channels, height, width), dtype=torch.float32)
+        radar_valid = torch.tensor(0.0, dtype=torch.float32)
+        if not self.waterscenes_mode:
+            return radar, radar_valid
+
+        stem = Path(img_info.get("file_name", "")).stem
+        radar_file = self._resolve_optional_path(
+            img_info.get("radar_file"),
+            self.radar_root / f"{stem}.csv" if self.radar_root is not None else None,
+        )
+        calib_file = self._resolve_optional_path(
+            img_info.get("calib_file"),
+            self.calib_root / f"{stem}.txt" if self.calib_root is not None else None,
+        )
+        if radar_file is None or calib_file is None:
+            if radar_file is None:
+                self._warn_once(
+                    "radar-path-missing",
+                    f"Radar file missing for image_id={image_id}; fallback to zeros (radar_valid=0).",
+                )
+            if calib_file is None:
+                self._warn_once(
+                    "calib-path-missing",
+                    f"Calibration file missing for image_id={image_id}; fallback to zeros (radar_valid=0).",
+                )
+            return radar, radar_valid
+
+        try:
+            points = self._load_radar_points(radar_file)
+            t_camera_radar, intrinsic = self._parse_calib_matrix(calib_file)
+            radar, ok = self._build_radar_map(points, t_camera_radar, intrinsic, width, height)
+            radar_valid = torch.tensor(1.0 if ok else 0.0, dtype=torch.float32)
+        except Exception as exc:
+            self._warn_once(
+                "radar-read-failed",
+                f"Radar/calib parse failed for image_id={image_id}, radar={radar_file}, calib={calib_file}; fallback to zeros (radar_valid=0). err={exc}",
+            )
+            radar = torch.zeros((self.radar_channels, height, width), dtype=torch.float32)
+            radar_valid = torch.tensor(0.0, dtype=torch.float32)
+        return radar, radar_valid
+
+    def __getitem__(self, idx):
+        img, target = super(CocoDetection, self).__getitem__(idx)
+        image_id = self.ids[idx]
+        target = {'image_id': image_id, 'annotations': target}
+        img, target = self.prepare(img, target)
+        img_info = self.coco.loadImgs(image_id)[0]
+        tir, tir_valid = self._load_tir_with_valid(img_info, image_id, img)
+        radar_k, radar_valid = self._load_radar_with_valid(img_info, image_id, img.width, img.height)
         target["tir"] = tir
-        target["tir_valid"] = torch.tensor(tir_valid, dtype=torch.float32)
+        target["tir_valid"] = tir_valid
+        if self.waterscenes_mode:
+            target["radar_k"] = radar_k
+            target["radar_valid"] = radar_valid
+            # Preserve a WaterScenes-local modality contract while reusing legacy keys in transforms.
+            target["modalities"] = {
+                "rgb": img,
+                "tir": tir,
+                "tir_valid": tir_valid,
+                "radar_k": radar_k,
+                "radar_valid": radar_valid,
+            }
         if self._transforms is not None:
             img, target = self._transforms(img, target)
         return img, target
@@ -167,15 +401,31 @@ def make_coco_transforms(image_set, args=None):
         tir_mean = 0.5
         tir_std = 0.5
         tir_dropout = 0.3
+        radar_dropout = 0.3
+        radar_mean = [0.0, 0.0, 0.0, 0.0]
+        radar_std = [1.0, 1.0, 1.0, 1.0]
+        use_waterscenes_modalities = False
     else:
         tir_mean = float(getattr(args, "tir_mean", 0.5))
         tir_std = float(getattr(args, "tir_std", 0.5))
         tir_dropout = float(getattr(args, "tir_dropout", 0.3))
+        radar_dropout = float(getattr(args, "radar_dropout", 0.3))
+        radar_mean = list(getattr(args, "radar_mean", [0.0, 0.0, 0.0, 0.0]))
+        radar_std = list(getattr(args, "radar_std", [1.0, 1.0, 1.0, 1.0]))
+        use_waterscenes_modalities = bool(getattr(args, "use_waterscenes_modalities", False))
+
+    if use_waterscenes_modalities:
+        mean = [0.485, 0.456, 0.406, tir_mean, 0.0] + radar_mean + [0.0]
+        std = [0.229, 0.224, 0.225, tir_std, 1.0] + radar_std + [1.0]
+        fusion_order = ["rgb", "tir", "tir_valid", "radar_k", "radar_valid"]
+    else:
+        mean = [0.485, 0.456, 0.406, tir_mean, 0.0]
+        std = [0.229, 0.224, 0.225, tir_std, 1.0]
+        fusion_order = ["rgb", "tir", "tir_valid"]
 
     normalize = T.Compose([
         T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406, tir_mean, 0.0],
-                    [0.229, 0.224, 0.225, tir_std, 1.0])
+        T.Normalize(mean, std, fusion_order=fusion_order)
     ])
 
     scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
@@ -192,6 +442,7 @@ def make_coco_transforms(image_set, args=None):
             ),
             T.RandomResize(scales, max_size=1333),
             T.ModalityDropout(p=tir_dropout),
+            T.RadarModalityDropout(p=radar_dropout),
             normalize,
         ])
 
@@ -214,6 +465,9 @@ def build(image_set, args):
     waterscenes_train = root / "instances_train.json"
     waterscenes_val = root / "instances_val.json"
     tir_root = root / "CAM_IR"
+    radar_root = root / "radar"
+    calib_root = root / "calib"
+    waterscenes_mode = False
     if coco_train.exists():
         PATHS = {
             "train": (root / "train2017", coco_train),
@@ -221,11 +475,32 @@ def build(image_set, args):
         }
         if not tir_root.exists():
             tir_root = None
+        radar_root = None
+        calib_root = None
+        setattr(args, "use_waterscenes_modalities", False)
+        setattr(args, "modality_order", ["rgb", "tir", "tir_valid"])
+        setattr(args, "tir_valid_channel_idx", 4)
+        setattr(args, "radar_valid_channel_idx", -1)
+        setattr(args, "in_channels", 5)
     elif waterscenes_train.exists() and (root / "image").exists():
         PATHS = {
             "train": (root / "image", waterscenes_train),
             "val": (root / "image", waterscenes_val if waterscenes_val.exists() else waterscenes_train),
         }
+        waterscenes_mode = True
+        if not tir_root.exists():
+            tir_root = None
+        if not radar_root.exists():
+            radar_root = None
+        if not calib_root.exists():
+            calib_root = None
+        radar_channels = int(getattr(args, "radar_channels", 4))
+        setattr(args, "use_waterscenes_modalities", True)
+        setattr(args, "radar_channels", radar_channels)
+        setattr(args, "modality_order", ["rgb", "tir", "tir_valid", "radar_k", "radar_valid"])
+        setattr(args, "tir_valid_channel_idx", 4)
+        setattr(args, "radar_valid_channel_idx", 5 + radar_channels)
+        setattr(args, "in_channels", 5 + radar_channels + 1)
     else:
         raise FileNotFoundError(
             "Unsupported COCO layout. Expected either COCO-2017 layout "
@@ -235,5 +510,6 @@ def build(image_set, args):
     img_folder, ann_file = PATHS[image_set]
     dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set, args), return_masks=args.masks,
                             cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size(),
-                            tir_root=tir_root)
+                            tir_root=tir_root, radar_root=radar_root, calib_root=calib_root,
+                            waterscenes_mode=waterscenes_mode, radar_channels=int(getattr(args, "radar_channels", 4)))
     return dataset

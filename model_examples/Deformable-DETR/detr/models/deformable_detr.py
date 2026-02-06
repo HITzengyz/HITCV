@@ -37,7 +37,7 @@ def _get_clones(module, N):
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=True, with_box_refine=False, two_stage=False):
+                 aux_loss=True, with_box_refine=False, two_stage=False, expected_in_channels=5):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -84,6 +84,7 @@ class DeformableDETR(nn.Module):
         self.aux_loss = aux_loss
         self.with_box_refine = with_box_refine
         self.two_stage = two_stage
+        self.expected_in_channels = int(expected_in_channels)
         self._logged_input_shape = False
 
         prior_prob = 0.01
@@ -131,7 +132,9 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
-        assert samples.tensors.shape[1] == 5, f"expected 5-channel input, got {samples.tensors.shape[1]}"
+        assert samples.tensors.shape[1] == self.expected_in_channels, (
+            f"expected {self.expected_in_channels}-channel input, got {samples.tensors.shape[1]}"
+        )
         if not self._logged_input_shape and is_main_process():
             print(f"Input tensor shape: {tuple(samples.tensors.shape)}")
             self._logged_input_shape = True
@@ -471,7 +474,10 @@ def build(args):
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
+        expected_in_channels=int(getattr(args, "in_channels", 5)),
     )
+    model.tir_valid_channel_idx = int(getattr(args, "tir_valid_channel_idx", 4))
+    model.radar_valid_channel_idx = int(getattr(args, "radar_valid_channel_idx", -1))
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)

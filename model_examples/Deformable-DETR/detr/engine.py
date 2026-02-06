@@ -32,8 +32,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('tir_valid_ratio', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+    metric_logger.add_meter('radar_valid_ratio', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
+    core_model = model.module if hasattr(model, "module") else model
+    tir_valid_idx = int(getattr(core_model, "tir_valid_channel_idx", 4))
+    radar_valid_idx = int(getattr(core_model, "radar_valid_channel_idx", -1))
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
@@ -76,6 +81,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
+        c = samples.tensors.shape[1]
+        if 0 <= tir_valid_idx < c:
+            tir_valid_ratio = (samples.tensors[:, tir_valid_idx] > 0.5).float().mean().item()
+            metric_logger.update(tir_valid_ratio=tir_valid_ratio)
+        if 0 <= radar_valid_idx < c:
+            radar_valid_ratio = (samples.tensors[:, radar_valid_idx] > 0.5).float().mean().item()
+            metric_logger.update(radar_valid_ratio=radar_valid_ratio)
 
         samples, targets = prefetcher.next()
 
