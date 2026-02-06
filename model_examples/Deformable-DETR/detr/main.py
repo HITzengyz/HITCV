@@ -31,6 +31,32 @@ from models import build_model
 torch.npu.config.allow_internal_format = False
 torch.npu.set_compile_mode(jit_compile=False)
 
+
+def _preset_waterscenes_fusion_args(args):
+    """
+    Build model uses args.in_channels before dataset is built.
+    Pre-detect waterscenes layout from coco_path so model/dataset stay consistent.
+    """
+    if getattr(args, "dataset_file", "coco") != "coco":
+        return
+    root = Path(getattr(args, "coco_path", ""))
+    if not root.exists():
+        return
+    if (root / "instances_train.json").exists() and (root / "image").exists():
+        radar_channels = int(getattr(args, "radar_channels", 4))
+        args.use_waterscenes_modalities = True
+        args.radar_channels = radar_channels
+        args.modality_order = ["rgb", "tir", "tir_valid", "radar_k", "radar_valid"]
+        args.tir_valid_channel_idx = 4
+        args.radar_valid_channel_idx = 5 + radar_channels
+        args.in_channels = 5 + radar_channels + 1
+    else:
+        args.use_waterscenes_modalities = False
+        args.modality_order = ["rgb", "tir", "tir_valid"]
+        args.tir_valid_channel_idx = 4
+        args.radar_valid_channel_idx = -1
+        args.in_channels = 5
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
     parser.add_argument('--lr', default=2e-4, type=float)
@@ -164,6 +190,8 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+    _preset_waterscenes_fusion_args(args)
 
     model, criterion, postprocessors = build_model(args)
     model.to(device)
