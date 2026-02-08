@@ -98,7 +98,7 @@ class CocoDetection(TvCocoDetection):
                 if tir_path is None:
                     dropped_unpaired += 1
                     continue
-                valid_ids.append(img_id)
+            valid_ids.append(img_id)
         if missing:
             print(f"[WARN] Filtered {missing} missing images from dataset.")
         if dropped_unpaired:
