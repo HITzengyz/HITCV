@@ -19,8 +19,10 @@ import os
 
 import torch
 import torch.utils.data
+import torch.nn.functional as nnF
 from pycocotools import mask as coco_mask
 from PIL import Image
+from torchvision.transforms import functional as TVF
 
 from .torchvision_datasets import CocoDetection as TvCocoDetection
 from util.misc import get_local_rank, get_local_size
@@ -42,6 +44,8 @@ class CocoDetection(TvCocoDetection):
         calib_root=None,
         waterscenes_mode=False,
         radar_channels=4,
+        tir_strict=True,
+        tir_paired_only=False,
     ):
         super(CocoDetection, self).__init__(img_folder, ann_file,
                                             cache_mode=cache_mode, local_rank=local_rank, local_size=local_size)
@@ -52,24 +56,71 @@ class CocoDetection(TvCocoDetection):
         self.calib_root = Path(calib_root) if calib_root is not None else None
         self.waterscenes_mode = bool(waterscenes_mode)
         self.radar_channels = int(radar_channels)
+        self.tir_strict = bool(tir_strict)
+        self.tir_paired_only = bool(tir_paired_only)
+        self._tir_probe_exts = [".png", ".jpg", ".jpeg", ".tif", ".tiff"]
+        self._tir_suffix_priority = {ext: i for i, ext in enumerate(self._tir_probe_exts)}
+        self._tir_stem_index = {}
+        if self.waterscenes_mode and self.tir_root is not None and self.tir_root.exists():
+            for p in self.tir_root.iterdir():
+                if not p.is_file():
+                    continue
+                ext_l = p.suffix.lower()
+                if ext_l not in self._tir_suffix_priority:
+                    continue
+                stem = p.stem
+                prev = self._tir_stem_index.get(stem)
+                if prev is None:
+                    self._tir_stem_index[stem] = p
+                    continue
+                if self._tir_suffix_priority[ext_l] < self._tir_suffix_priority[prev.suffix.lower()]:
+                    self._tir_stem_index[stem] = p
         self._epoch = -1
         self._warned_once = set()
+        self.tir_overlap_count = 0
+        self.tir_overlap_ratio = 0.0
         self._filter_missing_images()
+        self._compute_tir_overlap_stats()
 
     def _filter_missing_images(self):
         missing = 0
+        dropped_unpaired = 0
         valid_ids = []
         for img_id in self.ids:
             info = self.coco.loadImgs(img_id)[0]
             file_name = info.get("file_name", "")
             img_path = file_name if os.path.isabs(file_name) else os.path.join(self.root, file_name)
-            if os.path.isfile(img_path):
-                valid_ids.append(img_id)
-            else:
+            if not os.path.isfile(img_path):
                 missing += 1
+                continue
+            if self.waterscenes_mode and self.tir_paired_only:
+                tir_path = self.resolve_tir_path(file_name, img_info=info)
+                if tir_path is None:
+                    dropped_unpaired += 1
+                    continue
+                valid_ids.append(img_id)
         if missing:
-            self.ids = valid_ids
             print(f"[WARN] Filtered {missing} missing images from dataset.")
+        if dropped_unpaired:
+            print(f"[WARN] Filtered {dropped_unpaired} unpaired RGB-only samples due to --tir_paired_only.")
+        if missing or dropped_unpaired:
+            self.ids = valid_ids
+
+    def _compute_tir_overlap_stats(self):
+        if not self.waterscenes_mode:
+            return
+        total = len(self.ids)
+        if total <= 0:
+            self.tir_overlap_count = 0
+            self.tir_overlap_ratio = 0.0
+            return
+        overlap = 0
+        for img_id in self.ids:
+            info = self.coco.loadImgs(img_id)[0]
+            if self.resolve_tir_path(info.get("file_name", ""), img_info=info) is not None:
+                overlap += 1
+        self.tir_overlap_count = overlap
+        self.tir_overlap_ratio = float(overlap) / float(total)
 
     def set_epoch(self, epoch):
         epoch = int(epoch)
@@ -96,6 +147,55 @@ class CocoDetection(TvCocoDetection):
         if fallback is not None and Path(fallback).is_file():
             return str(fallback)
         return None
+
+    def resolve_tir_path(self, rgb_file_name, img_info=None):
+        # Non-WaterScenes behavior remains unchanged.
+        if not self.waterscenes_mode:
+            tir_file = img_info.get("tir_file") if img_info is not None else None
+            fallback = self.tir_root / rgb_file_name if self.tir_root is not None else None
+            return self._resolve_optional_path(tir_file, fallback)
+
+        tir_file = img_info.get("tir_file") if img_info is not None else None
+        if tir_file:
+            p = Path(tir_file)
+            if p.is_file():
+                return str(p)
+            p2 = Path(self.root) / p
+            if p2.is_file():
+                return str(p2)
+        if self.tir_root is None:
+            return None
+        stem = Path(rgb_file_name).stem
+        indexed = self._tir_stem_index.get(stem)
+        if indexed is not None and indexed.is_file():
+            return str(indexed)
+        # Extension probing order is case-insensitive and deterministic.
+        for ext in self._tir_probe_exts:
+            cand = self.tir_root / f"{stem}{ext}"
+            if cand.is_file():
+                return str(cand)
+            cand_u = self.tir_root / f"{stem}{ext.upper()}"
+            if cand_u.is_file():
+                return str(cand_u)
+        return None
+
+    def _read_tir_tensor(self, tir_path):
+        with Image.open(tir_path) as im:
+            im.load()
+            if im.mode in ("RGB", "RGBA", "CMYK"):
+                raise ValueError(f"expected single-channel TIR image, got mode={im.mode}")
+            tir = TVF.pil_to_tensor(im)
+            if tir.ndim != 3 or tir.shape[0] != 1:
+                raise ValueError(f"expected 1xHxW tensor, got shape={tuple(tir.shape)}")
+            if im.mode in ("L", "P"):
+                tir = tir.to(dtype=torch.float32) / 255.0
+            elif im.mode in ("I;16", "I;16B", "I;16L"):
+                tir = tir.to(dtype=torch.float32) / 65535.0
+            elif im.mode == "F":
+                tir = tir.to(dtype=torch.float32).clamp_(0.0, 1.0)
+            else:
+                raise ValueError(f"unsupported TIR mode for normalization: {im.mode}")
+        return tir
 
     def _parse_calib_matrix(self, calib_path):
         extrinsic = None
@@ -225,21 +325,32 @@ class CocoDetection(TvCocoDetection):
     def _load_tir_with_valid(self, img_info, image_id, img):
         tir = None
         tir_valid = 0.0
-        tir_file = self._resolve_optional_path(
-            img_info.get("tir_file"),
-            self.tir_root / img_info.get("file_name", "") if self.tir_root is not None else None,
-        )
+        tir_file = self.resolve_tir_path(img_info.get("file_name", ""), img_info=img_info)
         if tir_file:
             try:
-                tir = self.get_tir(tir_file)
-                if tir is not None:
-                    if tir.size != img.size:
+                if self.waterscenes_mode:
+                    tir = self._read_tir_tensor(tir_file)
+                    if (tir.shape[-2], tir.shape[-1]) != (img.height, img.width):
+                        tir = nnF.interpolate(
+                            tir.unsqueeze(0),
+                            size=(img.height, img.width),
+                            mode="bilinear",
+                            align_corners=False,
+                        ).squeeze(0)
+                else:
+                    tir = self.get_tir(tir_file)
+                    if tir is not None and tir.size != img.size:
                         tir = tir.resize(img.size, resample=Image.BILINEAR)
+                if tir is not None:
                     tir_valid = 1.0
             except Exception as exc:
+                if self.waterscenes_mode and self.tir_strict:
+                    raise RuntimeError(
+                        f"TIR strict mode failure: image_id={image_id}, file={tir_file}, err={repr(exc)}"
+                    ) from exc
                 self._warn_once(
                     "tir-read-failed",
-                    f"TIR read failed for image_id={image_id}, file={tir_file}; fallback to zeros (tir_valid=0). err={exc}",
+                    f"TIR read failed for image_id={image_id}, file={tir_file}; fallback to zeros (tir_valid=0). err={repr(exc)}",
                 )
                 tir = None
                 tir_valid = 0.0
@@ -400,7 +511,7 @@ def make_coco_transforms(image_set, args=None):
     if args is None:
         tir_mean = 0.5
         tir_std = 0.5
-        tir_dropout = 0.3
+        tir_dropout = 0.0
         radar_dropout = 0.3
         radar_mean = [0.0, 0.0, 0.0, 0.0]
         radar_std = [1.0, 1.0, 1.0, 1.0]
@@ -408,7 +519,7 @@ def make_coco_transforms(image_set, args=None):
     else:
         tir_mean = float(getattr(args, "tir_mean", 0.5))
         tir_std = float(getattr(args, "tir_std", 0.5))
-        tir_dropout = float(getattr(args, "tir_dropout", 0.3))
+        tir_dropout = float(getattr(args, "tir_dropout", 0.0))
         radar_dropout = float(getattr(args, "radar_dropout", 0.3))
         radar_mean = list(getattr(args, "radar_mean", [0.0, 0.0, 0.0, 0.0]))
         radar_std = list(getattr(args, "radar_std", [1.0, 1.0, 1.0, 1.0]))
@@ -511,5 +622,7 @@ def build(image_set, args):
     dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set, args), return_masks=args.masks,
                             cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size(),
                             tir_root=tir_root, radar_root=radar_root, calib_root=calib_root,
-                            waterscenes_mode=waterscenes_mode, radar_channels=int(getattr(args, "radar_channels", 4)))
+                            waterscenes_mode=waterscenes_mode, radar_channels=int(getattr(args, "radar_channels", 4)),
+                            tir_strict=bool(int(getattr(args, "tir_strict", 1))),
+                            tir_paired_only=bool(int(getattr(args, "tir_paired_only", 0))))
     return dataset

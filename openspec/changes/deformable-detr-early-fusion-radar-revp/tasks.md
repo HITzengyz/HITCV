@@ -15,13 +15,13 @@
   - Files: `model_examples/Deformable-DETR/detr/datasets/coco.py`, `model_examples/Deformable-DETR/detr/main.py`
   - Targets:
     - `CocoDetection.__getitem__`
-    - dataset epoch hook (e.g., `set_epoch`)
+    - dataset epoch hook (for warning rate-limit)
     - train loop epoch boundary hook
   - Work:
-    - TIR read failure -> zeros + `tir_valid=0` with warning once per epoch per worker.
-    - Radar/calib read failure -> zeros + `radar_valid=0` with warning once per epoch per worker.
+    - Keep radar/calib fallback semantics unchanged.
+    - For TIR, missing-vs-read-failure behavior is finalized by strict tasks below.
   - Acceptance:
-    - Repeated failures in one epoch emit at most one warning per modality per worker.
+    - Warning rate-limit remains once per epoch per worker in non-strict fallback paths.
 
 - [x] 3) Implement Radar projection + REVP v1 raster (`k=4`)
   - Files: `model_examples/Deformable-DETR/detr/datasets/coco.py` (or helper module under datasets)
@@ -110,4 +110,94 @@
   - Acceptance:
     - Smoke run completes and logs contain required evidence fields.
 
+- [ ] 11) Add coverage/health diagnostics for TIR resolver and decode
+  - Files: `model_examples/Deformable-DETR/detr/tools/check_tir_coverage.py`
+  - Targets:
+    - COCO `images[]` inspection for `tir_file`
+    - resolver overlap analysis
+    - decode validation for resolved-existing files
+  - Work:
+    - Print `total_rgb`, `total_tir`, `overlap_count`, `overlap_ratio`.
+    - Print top-N missing pairs (`rgb_file -> expected_tir_path`).
+    - Print list of resolvable-but-unreadable TIR samples (path + error summary).
+    - Print zero-padding mismatch hints (`00001` vs `1`) when applicable.
+  - Acceptance:
+    - Script outputs the four core counters and ratios deterministically.
+    - Script outputs resolvable-but-unreadable list for strict-mode triage.
 
+- [ ] 12) Implement robust `resolve_tir_path` contract
+  - Files: `model_examples/Deformable-DETR/detr/datasets/coco.py`
+  - Targets:
+    - `CocoDetection._load_tir_with_valid`
+    - helper `resolve_tir_path(rgb_file_name, coco_root, tir_file=None)`
+  - Work:
+    - `tir_file` has priority and supports absolute/relative forms.
+    - Fallback to `CAM_IR/<stem>` probing with case-insensitive extension order: `.png/.jpg/.jpeg/.tif/.tiff`.
+    - Keep deterministic behavior.
+  - Acceptance:
+    - Existing `.jpg` matches continue to resolve.
+    - Alternate extension matches resolve without JSON edits.
+
+- [ ] 13) Add strict TIR mode flag and wiring
+  - Files: `model_examples/Deformable-DETR/detr/main.py`, `model_examples/Deformable-DETR/detr/datasets/coco.py`
+  - Targets:
+    - argparse config
+    - dataset constructor and runtime behavior
+  - Work:
+    - Add `--tir_strict` (default `1`).
+    - Thread option into loader behavior.
+  - Acceptance:
+    - Runtime prints/records strict mode setting once at startup.
+
+- [ ] 14) Enforce Strict TIR Preference in loader behavior
+  - Files: `model_examples/Deformable-DETR/detr/datasets/coco.py`, `model_examples/Deformable-DETR/detr/datasets/torchvision_datasets/coco.py`
+  - Targets:
+    - TIR decode path and error handling
+  - Work:
+    - If TIR is truly missing: fallback zeros + `tir_valid=0`.
+    - If TIR path resolves and file exists:
+      - strict=1 -> decode failure raises explicit error (fail-fast)
+      - strict=0 -> fallback zeros + `tir_valid=0` + rate-limited warning with `repr(e)` and path.
+    - Keep 8-bit/16-bit normalization to float32 `[0,1]`.
+  - Acceptance:
+    - In strict mode, overlap>0 with unreadable TIR produces explicit failure, never silent fallback.
+    - In non-strict mode, failure falls back with warning and remains rate-limited.
+    - Only truly-missing TIR is treated as missing in strict mode.
+
+- [ ] 15) Add training/inference ratio acceptance checks
+  - Files: `model_examples/Deformable-DETR/detr/test/` (new/extended smoke script), logging points in train/eval path
+  - Targets:
+    - 200-iteration run config
+    - ratio parser/assertion
+  - Work:
+    - Run 200 iterations with `--tir_dropout 0`.
+    - Compare runtime `tir_valid_ratio` to coverage script `overlap_ratio`.
+    - Assert that `tir_valid_ratio` is never `0` when `overlap_ratio > 0`.
+    - If `overlap_ratio > 0.8`, assert `tir_valid_ratio > 0.8`.
+  - Acceptance:
+    - Logs show `tir_valid_ratio` tracking `overlap_ratio` within tolerance.
+    - Check fails when overlap exists but runtime ratio collapses to zero.
+
+- [ ] 16) Extend deterministic tests for strict semantics
+  - Files: `model_examples/Deformable-DETR/detr/test/` (existing transform/alignment tests + new strict tests)
+  - Targets:
+    - strict/non-strict branch coverage
+  - Work:
+    - Verify transform alignment and `tir_valid` preservation remain correct.
+    - Add tests for:
+      - truly missing TIR -> valid fallback
+      - existing unreadable TIR + strict=1 -> raise
+      - existing unreadable TIR + strict=0 -> fallback warning
+  - Acceptance:
+    - Test suite fails on any silent strict-mode fallback.
+
+- [ ] 17) Optional Phase-A debug mode: paired-only training subset
+  - Files: `model_examples/Deformable-DETR/detr/tools/` or train data-loader config path
+  - Targets:
+    - overlap-only sample filtering (debug only)
+  - Work:
+    - Provide opt-in paired-only mode for debugging TIR pipeline with low-overlap datasets.
+    - Keep disabled by default.
+  - Acceptance:
+    - Debug run can enforce overlap-only sampling and clearly show high `tir_valid_ratio` on selected subset.
+    - Default training behavior remains unchanged.

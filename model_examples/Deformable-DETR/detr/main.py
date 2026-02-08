@@ -153,8 +153,12 @@ def get_args_parser():
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
-    parser.add_argument('--tir_dropout', default=0.3, type=float,
+    parser.add_argument('--tir_dropout', default=0.0, type=float,
                         help='Modality dropout probability for TIR (train only)')
+    parser.add_argument('--tir_strict', default=1, type=int, choices=[0, 1],
+                        help='Strict TIR policy for WaterScenes: 1=fail-fast on readable-path decode failure, 0=warn+fallback')
+    parser.add_argument('--tir_paired_only', default=0, type=int, choices=[0, 1],
+                        help='Debug-only: train/eval only on samples with resolvable TIR pairs in WaterScenes')
     parser.add_argument('--tir_mean', default=0.5, type=float,
                         help='Normalization mean for TIR channel')
     parser.add_argument('--tir_std', default=0.5, type=float,
@@ -202,12 +206,21 @@ def main(args):
 
     dataset_train = build_dataset(image_set='train', args=args)
     dataset_val = build_dataset(image_set='val', args=args)
+    if hasattr(dataset_train, "tir_overlap_ratio"):
+        print(
+            "[TIRCoverage] "
+            f"overlap_count={int(getattr(dataset_train, 'tir_overlap_count', 0))}, "
+            f"total={len(dataset_train)}, "
+            f"overlap_ratio={float(getattr(dataset_train, 'tir_overlap_ratio', 0.0)):.6f}"
+        )
     print(
         "[FusionConfig] "
         f"modality_order={getattr(args, 'modality_order', ['rgb', 'tir', 'tir_valid'])}, "
         f"fused_channels={int(getattr(args, 'in_channels', 5))}, "
         f"tir_valid_idx={int(getattr(args, 'tir_valid_channel_idx', 4))}, "
-        f"radar_valid_idx={int(getattr(args, 'radar_valid_channel_idx', -1))}"
+        f"radar_valid_idx={int(getattr(args, 'radar_valid_channel_idx', -1))}, "
+        f"tir_strict={int(getattr(args, 'tir_strict', 1))}, "
+        f"tir_paired_only={int(getattr(args, 'tir_paired_only', 0))}"
     )
 
     if args.distributed:
