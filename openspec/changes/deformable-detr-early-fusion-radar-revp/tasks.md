@@ -110,7 +110,7 @@
   - Acceptance:
     - Smoke run completes and logs contain required evidence fields.
 
-- [ ] 11) Add coverage/health diagnostics for TIR resolver and decode
+- [x] 11) Add coverage/health diagnostics for TIR resolver and decode
   - Files: `model_examples/Deformable-DETR/detr/tools/check_tir_coverage.py`
   - Targets:
     - COCO `images[]` inspection for `tir_file`
@@ -125,7 +125,7 @@
     - Script outputs the four core counters and ratios deterministically.
     - Script outputs resolvable-but-unreadable list for strict-mode triage.
 
-- [ ] 12) Implement robust `resolve_tir_path` contract
+- [x] 12) Implement robust `resolve_tir_path` contract
   - Files: `model_examples/Deformable-DETR/detr/datasets/coco.py`
   - Targets:
     - `CocoDetection._load_tir_with_valid`
@@ -138,7 +138,7 @@
     - Existing `.jpg` matches continue to resolve.
     - Alternate extension matches resolve without JSON edits.
 
-- [ ] 13) Add strict TIR mode flag and wiring
+- [x] 13) Add strict TIR mode flag and wiring
   - Files: `model_examples/Deformable-DETR/detr/main.py`, `model_examples/Deformable-DETR/detr/datasets/coco.py`
   - Targets:
     - argparse config
@@ -149,7 +149,7 @@
   - Acceptance:
     - Runtime prints/records strict mode setting once at startup.
 
-- [ ] 14) Enforce Strict TIR Preference in loader behavior
+- [x] 14) Enforce Strict TIR Preference in loader behavior
   - Files: `model_examples/Deformable-DETR/detr/datasets/coco.py`, `model_examples/Deformable-DETR/detr/datasets/torchvision_datasets/coco.py`
   - Targets:
     - TIR decode path and error handling

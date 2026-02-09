@@ -53,7 +53,7 @@ def resolve_tir_path(rgb_file_name, coco_root, tir_index, img_info):
     p = tir_index.get(stem)
     if p is not None and p.is_file():
         return p
-    tir_root = coco_root / "CAM_IR"
+    tir_root = coco_root / "WaterScenes_Fake_IR_Final"
     for ext in PROBE_EXTS:
         c = tir_root / f"{stem}{ext}"
         if c.is_file():

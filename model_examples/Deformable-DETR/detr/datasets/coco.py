@@ -575,7 +575,7 @@ def build(image_set, args):
     coco_val = coco_ann_dir / f'{mode}_val2017.json'
     waterscenes_train = root / "instances_train.json"
     waterscenes_val = root / "instances_val.json"
-    tir_root = root / "CAM_IR"
+    tir_root = root / "WaterScenes_Fake_IR_Final"
     radar_root = root / "radar"
     calib_root = root / "calib"
     waterscenes_mode = False
