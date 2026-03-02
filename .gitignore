@@ -7,3 +7,4 @@ build
 .vscode/
 CMakeFiles
 /model_examples/Deformable-DETR/data/
+.log
