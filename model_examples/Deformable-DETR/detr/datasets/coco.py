@@ -560,6 +560,8 @@ def make_coco_transforms(image_set, args=None):
     if image_set == 'val':
         return T.Compose([
             T.RandomResize([800], max_size=1333),
+            T.ModalityDropout(p=tir_dropout),
+            T.RadarModalityDropout(p=radar_dropout),
             normalize,
         ])
 

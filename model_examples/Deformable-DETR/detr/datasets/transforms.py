@@ -17,6 +17,7 @@ import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
 
+
 from util.box_ops import box_xyxy_to_cxcywh
 from util.misc import interpolate
 
@@ -286,41 +287,84 @@ class RandomErasing(object):
 
 
 class ModalityDropout(object):
-    def __init__(self, p=0.3):
-        self.p = p
+    def __init__(self, p=0.0):
+        self.p = float(p)
 
-    def __call__(self, img, target):
-        if target is None or self.p <= 0:
-            return img, target
-        if "tir" in target and target["tir"] is not None and random.random() < self.p:
-            target = target.copy()
-            tir = target["tir"]
-            if torch.is_tensor(tir):
-                target["tir"] = torch.zeros_like(tir)
-                target["tir_valid"] = torch.tensor(0.0, dtype=tir.dtype, device=tir.device)
-            else:
-                target["tir"] = PIL.Image.new("L", img.size, 0)
-                target["tir_valid"] = torch.tensor(0.0)
-        return img, target
+    def __call__(self, image, target):
+        if self.p <= 0:
+            return image, target
 
+        # 找到 valid
+        tir_valid = None
+        if "modalities" in target and "tir_valid" in target["modalities"]:
+            tir_valid = target["modalities"]["tir_valid"]
+        elif "tir_valid" in target:
+            tir_valid = target["tir_valid"]
 
+        # 如果本来就无效，直接返回
+        if tir_valid is not None:
+            tv = float(tir_valid.item()) if torch.is_tensor(tir_valid) else float(tir_valid)
+            if tv <= 0:
+                return image, target
+
+        # 以概率 p 让 TIR 缺失
+        if random.random() < self.p:
+            # 置零 tir
+            if "modalities" in target and "tir" in target["modalities"]:
+                tir = target["modalities"]["tir"]
+                if torch.is_tensor(tir):
+                    target["modalities"]["tir"] = torch.zeros_like(tir)
+                else:
+                    target["modalities"]["tir"] = None
+                # tir_valid -> 0
+                tv = target["modalities"].get("tir_valid", None)
+                target["modalities"]["tir_valid"] = torch.zeros_like(tv) if torch.is_tensor(tv) else torch.tensor(0.0)
+
+            # 兼容 legacy keys
+            if "tir" in target:
+                tir = target["tir"]
+                target["tir"] = torch.zeros_like(tir) if torch.is_tensor(tir) else None
+            if "tir_valid" in target:
+                tv = target["tir_valid"]
+                target["tir_valid"] = torch.zeros_like(tv) if torch.is_tensor(tv) else torch.tensor(0.0)
+
+        return image, target
+
+#类似
 class RadarModalityDropout(object):
-    def __init__(self, p=0.3):
-        self.p = p
+    def __init__(self, p=0.0):
+        self.p = float(p)
 
-    def __call__(self, img, target):
-        if target is None or self.p <= 0:
-            return img, target
-        if "radar_k" in target and target["radar_k"] is not None and random.random() < self.p:
-            target = target.copy()
-            radar_k = target["radar_k"]
-            if torch.is_tensor(radar_k):
-                target["radar_k"] = torch.zeros_like(radar_k)
-                target["radar_valid"] = torch.tensor(0.0, dtype=radar_k.dtype, device=radar_k.device)
-            else:
-                target["radar_k"] = None
-                target["radar_valid"] = torch.tensor(0.0)
-        return img, target
+    def __call__(self, image, target):
+        if self.p <= 0:
+            return image, target
+
+        radar_valid = None
+        if "modalities" in target and "radar_valid" in target["modalities"]:
+            radar_valid = target["modalities"]["radar_valid"]
+        elif "radar_valid" in target:
+            radar_valid = target["radar_valid"]
+
+        if radar_valid is not None:
+            rv = float(radar_valid.item()) if torch.is_tensor(radar_valid) else float(radar_valid)
+            if rv <= 0:
+                return image, target
+
+        if random.random() < self.p:
+            if "modalities" in target and "radar_k" in target["modalities"]:
+                rk = target["modalities"]["radar_k"]
+                target["modalities"]["radar_k"] = torch.zeros_like(rk)
+                rv = target["modalities"].get("radar_valid", None)
+                target["modalities"]["radar_valid"] = torch.zeros_like(rv) if torch.is_tensor(rv) else torch.tensor(0.0)
+
+            if "radar_k" in target:
+                rk = target["radar_k"]
+                target["radar_k"] = torch.zeros_like(rk)
+            if "radar_valid" in target:
+                rv = target["radar_valid"]
+                target["radar_valid"] = torch.zeros_like(rv) if torch.is_tensor(rv) else torch.tensor(0.0)
+
+        return image, target
 
 
 class Normalize(object):
