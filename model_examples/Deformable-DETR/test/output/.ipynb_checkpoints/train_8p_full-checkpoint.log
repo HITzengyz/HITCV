@@ -1,0 +1,60 @@
+[2026-02-03 20:44:15,218] torch.distributed.run: [WARNING] master_addr is only used for static rdzv_backend and when rdzv_endpoint is not specified.
+/root/miniconda3/lib/python3.10/site-packages/torch_npu/contrib/transfer_to_npu.py:299: ImportWarning: 
+    *************************************************************************************************************
+    The torch.Tensor.cuda and torch.nn.Module.cuda are replaced with torch.Tensor.npu and torch.nn.Module.npu now..
+    The torch.cuda.DoubleTensor is replaced with torch.npu.FloatTensor cause the double type is not supported now..
+    The backend in torch.distributed.init_process_group set to hccl now..
+    The torch.cuda.* and torch.cuda.amp.* are replaced with torch.npu.* and torch.npu.amp.* now..
+    The device parameters have been replaced with npu in the function below:
+    torch.logspace, torch.randint, torch.hann_window, torch.rand, torch.full_like, torch.ones_like, torch.rand_like, torch.randperm, torch.arange, torch.frombuffer, torch.normal, torch._empty_per_channel_affine_quantized, torch.empty_strided, torch.empty_like, torch.scalar_tensor, torch.tril_indices, torch.bartlett_window, torch.ones, torch.sparse_coo_tensor, torch.randn, torch.kaiser_window, torch.tensor, torch.triu_indices, torch.as_tensor, torch.zeros, torch.randint_like, torch.full, torch.eye, torch._sparse_csr_tensor_unsafe, torch.empty, torch._sparse_coo_tensor_unsafe, torch.blackman_window, torch.zeros_like, torch.range, torch.sparse_csr_tensor, torch.randn_like, torch.from_file, torch._cudnn_init_dropout_state, torch._empty_affine_quantized, torch.linspace, torch.hamming_window, torch.empty_quantized, torch._pin_memory, torch.autocast, torch.load, torch.Generator, torch.Tensor.new_empty, torch.Tensor.new_empty_strided, torch.Tensor.new_full, torch.Tensor.new_ones, torch.Tensor.new_tensor, torch.Tensor.new_zeros, torch.Tensor.to, torch.nn.Module.to, torch.nn.Module.to_empty
+    *************************************************************************************************************
+    
+  warnings.warn(msg, ImportWarning)
+/root/miniconda3/lib/python3.10/site-packages/torch_npu/contrib/transfer_to_npu.py:260: RuntimeWarning: torch.jit.script and torch.jit.script_method will be disabled by transfer_to_npu, which currently does not support them, if you need to enable them, please do not use transfer_to_npu.
+  warnings.warn(msg, RuntimeWarning)
+/root/miniconda3/lib/python3.10/site-packages/mx_driving/fused.py:14: DeprecationWarning: This package is deprecated and will be removed in future. Please use `mx_driving.api` instead.
+  warnings.warn(
+[W compiler_depend.ts:623] Warning: expandable_segments currently defaults to false. You can enable this feature by `export PYTORCH_NPU_ALLOC_CONF = expandable_segments:True`. (function operator())
+usage: Deformable DETR training and evaluation script [-h] [--lr LR] [--lr_backbone_names LR_BACKBONE_NAMES [LR_BACKBONE_NAMES ...]] [--lr_backbone LR_BACKBONE]
+                                                      [--lr_linear_proj_names LR_LINEAR_PROJ_NAMES [LR_LINEAR_PROJ_NAMES ...]] [--lr_linear_proj_mult LR_LINEAR_PROJ_MULT] [--batch_size BATCH_SIZE]
+                                                      [--weight_decay WEIGHT_DECAY] [--epochs EPOCHS] [--lr_drop LR_DROP] [--lr_drop_epochs LR_DROP_EPOCHS [LR_DROP_EPOCHS ...]] [--clip_max_norm CLIP_MAX_NORM] [--sgd]
+                                                      [--with_box_refine] [--two_stage] [--frozen_weights FROZEN_WEIGHTS] [--backbone BACKBONE] [--dilation] [--position_embedding {sine,learned}]
+                                                      [--position_embedding_scale POSITION_EMBEDDING_SCALE] [--num_feature_levels NUM_FEATURE_LEVELS] [--enc_layers ENC_LAYERS] [--dec_layers DEC_LAYERS]
+                                                      [--dim_feedforward DIM_FEEDFORWARD] [--hidden_dim HIDDEN_DIM] [--dropout DROPOUT] [--nheads NHEADS] [--num_queries NUM_QUERIES] [--dec_n_points DEC_N_POINTS]
+                                                      [--enc_n_points ENC_N_POINTS] [--masks] [--no_aux_loss] [--set_cost_class SET_COST_CLASS] [--set_cost_bbox SET_COST_BBOX] [--set_cost_giou SET_COST_GIOU]
+                                                      [--mask_loss_coef MASK_LOSS_COEF] [--dice_loss_coef DICE_LOSS_COEF] [--cls_loss_coef CLS_LOSS_COEF] [--bbox_loss_coef BBOX_LOSS_COEF]
+                                                      [--giou_loss_coef GIOU_LOSS_COEF] [--focal_alpha FOCAL_ALPHA] [--dataset_file DATASET_FILE] [--coco_path COCO_PATH] [--coco_panoptic_path COCO_PANOPTIC_PATH]
+                                                      [--remove_difficult] [--output_dir OUTPUT_DIR] [--device DEVICE] [--seed SEED] [--resume RESUME] [--start_epoch N] [--eval] [--num_workers NUM_WORKERS]
+                                                      [--cache_mode] [--tir_dropout TIR_DROPOUT] [--tir_mean TIR_MEAN] [--tir_std TIR_STD] [--radar_enabled] [--radar_root RADAR_ROOT] [--radar_mean RADAR_MEAN]
+                                                      [--radar_std RADAR_STD] [--radar_dropout RADAR_DROPOUT] [--radar_fusion {sum,concat,gated}] [--radar_calib RADAR_CALIB]
+Deformable DETR training and evaluation script: error: unrecognized arguments: \
+[2026-02-03 20:44:35,566] torch.distributed.elastic.multiprocessing.api: [ERROR] failed (exitcode: 2) local_rank: 0 (pid: 12590) of binary: /root/miniconda3/bin/python
+Traceback (most recent call last):
+  File "/root/miniconda3/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+  File "/root/miniconda3/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 346, in wrapper
+    return f(*args, **kwargs)
+  File "/root/miniconda3/lib/python3.10/site-packages/torch/distributed/run.py", line 806, in main
+    run(args)
+  File "/root/miniconda3/lib/python3.10/site-packages/torch/distributed/run.py", line 797, in run
+    elastic_launch(
+  File "/root/miniconda3/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 134, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/root/miniconda3/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 264, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+detr/main.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-02-03_20:44:35
+  host      : autodl-container-c86d4c9b52-3050af2a
+  rank      : 0 (local_rank: 0)
+  exitcode  : 2 (pid: 12590)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
