@@ -93,7 +93,8 @@ class CocoEvaluator(object):
             boxes = prediction["boxes"]
             boxes = convert_to_xywh(boxes).tolist()
             scores = prediction["scores"].tolist()
-            labels = prediction["labels"].tolist()
+            #评估前回写为1-7
+            labels = ( prediction["labels"] + 1 ).tolist()
 
             coco_results.extend(
                 [
