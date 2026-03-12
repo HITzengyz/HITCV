@@ -1,0 +1,10 @@
+{
+  "total_points": 661,
+  "in_fov": 653,
+  "out_of_fov": 8,
+  "dropped_ratio": 0.012102874432677761,
+  "radar_valid": 1,
+  "calib_valid": 1,
+  "delta": null,
+  "render_mode": "range"
+}

@@ -19,7 +19,8 @@ import torch_npu
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
-                       is_dist_avail_and_initialized, inverse_sigmoid)
+                       is_dist_avail_and_initialized, inverse_sigmoid,
+                       is_main_process)
 
 from .backbone import build_backbone
 from .matcher import build_matcher
@@ -36,7 +37,7 @@ def _get_clones(module, N):
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=True, with_box_refine=False, two_stage=False):
+                 aux_loss=True, with_box_refine=False, two_stage=False, expected_in_channels=5):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -83,6 +84,8 @@ class DeformableDETR(nn.Module):
         self.aux_loss = aux_loss
         self.with_box_refine = with_box_refine
         self.two_stage = two_stage
+        self.expected_in_channels = int(expected_in_channels)
+        self._logged_input_shape = False
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -129,6 +132,12 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
+        assert samples.tensors.shape[1] == self.expected_in_channels, (
+            f"expected {self.expected_in_channels}-channel input, got {samples.tensors.shape[1]}"
+        )
+        if not self._logged_input_shape and is_main_process():
+            print(f"Input tensor shape: {tuple(samples.tensors.shape)}")
+            self._logged_input_shape = True
         features, pos = self.backbone(samples)
 
         srcs = []
@@ -338,10 +347,13 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        handle.wait()
-        with torch.cuda.stream(s):
-            s.wait_stream(torch.cuda.default_stream())
-            num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
+        if handle is not None and s is not None:
+            handle.wait()
+            with torch.cuda.stream(s):
+                s.wait_stream(torch.cuda.default_stream())
+                num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
+        else:
+            num_boxes = max(float(num_boxes.item()), 1.0)
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -391,6 +403,8 @@ class SetCriterion(nn.Module):
     def get_num_boxes(self, targets, device):
         num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=device)
+        handle = None
+        s = None
         if is_dist_avail_and_initialized():
             s = torch.cuda.Stream()
             handle = torch.distributed.all_reduce(num_boxes, async_op=True)
@@ -465,7 +479,10 @@ def build(args):
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
+        expected_in_channels=int(getattr(args, "in_channels", 5)),
     )
+    model.tir_valid_channel_idx = int(getattr(args, "tir_valid_channel_idx", 4))
+    model.radar_valid_channel_idx = int(getattr(args, "radar_valid_channel_idx", -1))
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)

@@ -60,6 +60,14 @@ class CocoDetection(VisionDataset):
             return Image.open(BytesIO(self.cache[path])).convert('RGB')
         return Image.open(os.path.join(self.root, path)).convert('RGB')
 
+    def get_tir(self, path):
+        if self.cache_mode:
+            if path not in self.cache.keys():
+                with open(os.path.join(self.root, path), 'rb') as f:
+                    self.cache[path] = f.read()
+            return Image.open(BytesIO(self.cache[path])).convert('L')
+        return Image.open(os.path.join(self.root, path)).convert('L')
+
     def __getitem__(self, index):
         """
         Args:

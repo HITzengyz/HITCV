@@ -23,6 +23,18 @@ from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
 
 
+def _to_device(value, device):
+    if torch.is_tensor(value):
+        return value.to(device, non_blocking=True)
+    if isinstance(value, dict):
+        return {k: _to_device(v, device) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_device(v, device) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_to_device(v, device) for v in value)
+    return value
+
+
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
@@ -32,8 +44,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('tir_valid_ratio', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+    metric_logger.add_meter('radar_valid_ratio', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
+    core_model = model.module if hasattr(model, "module") else model
+    tir_valid_idx = int(getattr(core_model, "tir_valid_channel_idx", 4))
+    radar_valid_idx = int(getattr(core_model, "radar_valid_channel_idx", -1))
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
@@ -76,6 +93,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
+        c = samples.tensors.shape[1]
+        if 0 <= tir_valid_idx < c:
+            tir_valid_ratio = (samples.tensors[:, tir_valid_idx] > 0.5).float().mean().item()
+            metric_logger.update(tir_valid_ratio=tir_valid_ratio)
+        if 0 <= radar_valid_idx < c:
+            radar_valid_ratio = (samples.tensors[:, radar_valid_idx] > 0.5).float().mean().item()
+            metric_logger.update(radar_valid_ratio=radar_valid_ratio)
 
         samples, targets = prefetcher.next()
 
@@ -107,7 +131,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        targets = [_to_device(t, device) for t in targets]
 
         num_boxes, handle, s = criterion.get_num_boxes(targets, device)
         outputs = model(samples)

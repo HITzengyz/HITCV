@@ -31,6 +31,32 @@ from models import build_model
 torch.npu.config.allow_internal_format = False
 torch.npu.set_compile_mode(jit_compile=False)
 
+
+def _preset_waterscenes_fusion_args(args):
+    """
+    Build model uses args.in_channels before dataset is built.
+    Pre-detect waterscenes layout from coco_path so model/dataset stay consistent.
+    """
+    if getattr(args, "dataset_file", "coco") != "coco":
+        return
+    root = Path(getattr(args, "coco_path", ""))
+    if not root.exists():
+        return
+    if (root / "instances_train.json").exists() and (root / "image").exists():
+        radar_channels = int(getattr(args, "radar_channels", 4))
+        args.use_waterscenes_modalities = True
+        args.radar_channels = radar_channels
+        args.modality_order = ["rgb", "tir", "tir_valid", "radar_k", "radar_valid"]
+        args.tir_valid_channel_idx = 4
+        args.radar_valid_channel_idx = 5 + radar_channels
+        args.in_channels = 5 + radar_channels + 1
+    else:
+        args.use_waterscenes_modalities = False
+        args.modality_order = ["rgb", "tir", "tir_valid"]
+        args.tir_valid_channel_idx = 4
+        args.radar_valid_channel_idx = -1
+        args.in_channels = 5
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
     parser.add_argument('--lr', default=2e-4, type=float)
@@ -127,6 +153,28 @@ def get_args_parser():
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
+    parser.add_argument('--tir_dropout', default=0.0, type=float,
+                        help='Modality dropout probability for TIR (train only)')
+    parser.add_argument('--tir_strict', default=1, type=int, choices=[0, 1],
+                        help='Strict TIR policy for WaterScenes: 1=fail-fast on readable-path decode failure, 0=warn+fallback')
+    parser.add_argument('--tir_paired_only', default=0, type=int, choices=[0, 1],
+                        help='Debug-only: train/eval only on samples with resolvable TIR pairs in WaterScenes')
+    parser.add_argument('--tir_mean', default=0.5, type=float,
+                        help='Normalization mean for TIR channel')
+    parser.add_argument('--tir_std', default=0.5, type=float,
+                        help='Normalization std for TIR channel')
+    parser.add_argument('--radar_channels', default=4, type=int,
+                        help='Number of radar REVP channels')
+    parser.add_argument('--radar_dropout', default=0.3, type=float,
+                        help='Modality dropout probability for Radar (train only)')
+    parser.add_argument('--radar_mean', default=[0.0, 0.0, 0.0, 0.0], type=float, nargs='+',
+                        help='Normalization mean for radar channels')
+    parser.add_argument('--radar_std', default=[1.0, 1.0, 1.0, 1.0], type=float, nargs='+',
+                        help='Normalization std for radar channels')
+    parser.add_argument('--use_waterscenes_modalities', default=False, action='store_true',
+                        help='Enable WaterScenes-local multimodality fusion contract')
+    parser.add_argument('--in_channels', default=5, type=int,
+                        help='Expected fused input channels for backbone/model assertions')
 
     return parser
 
@@ -147,6 +195,8 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
 
+    _preset_waterscenes_fusion_args(args)
+
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
@@ -156,6 +206,22 @@ def main(args):
 
     dataset_train = build_dataset(image_set='train', args=args)
     dataset_val = build_dataset(image_set='val', args=args)
+    if hasattr(dataset_train, "tir_overlap_ratio"):
+        print(
+            "[TIRCoverage] "
+            f"overlap_count={int(getattr(dataset_train, 'tir_overlap_count', 0))}, "
+            f"total={len(dataset_train)}, "
+            f"overlap_ratio={float(getattr(dataset_train, 'tir_overlap_ratio', 0.0)):.6f}"
+        )
+    print(
+        "[FusionConfig] "
+        f"modality_order={getattr(args, 'modality_order', ['rgb', 'tir', 'tir_valid'])}, "
+        f"fused_channels={int(getattr(args, 'in_channels', 5))}, "
+        f"tir_valid_idx={int(getattr(args, 'tir_valid_channel_idx', 4))}, "
+        f"radar_valid_idx={int(getattr(args, 'radar_valid_channel_idx', -1))}, "
+        f"tir_strict={int(getattr(args, 'tir_strict', 1))}, "
+        f"tir_paired_only={int(getattr(args, 'tir_paired_only', 0))}"
+    )
 
     if args.distributed:
         if args.cache_mode:
@@ -280,6 +346,10 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
+        if hasattr(dataset_train, "set_epoch"):
+            dataset_train.set_epoch(epoch)
+        if hasattr(dataset_val, "set_epoch"):
+            dataset_val.set_epoch(epoch)
         train_stats = train_one_epoch(
             model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
         lr_scheduler.step()

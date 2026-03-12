@@ -48,6 +48,11 @@ def crop(image, target, region):
         target['masks'] = target['masks'][:, i:i + h, j:j + w]
         fields.append("masks")
 
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.crop(target["tir"], *region)
+    if "radar_k" in target and target["radar_k"] is not None:
+        target["radar_k"] = F.crop(target["radar_k"], *region)
+
     # remove elements for which the boxes or masks that have zero area
     if "boxes" in target or "masks" in target:
         # favor boxes selection when defining which elements to keep
@@ -77,6 +82,11 @@ def hflip(image, target):
 
     if "masks" in target:
         target['masks'] = target['masks'].flip(-1)
+
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.hflip(target["tir"])
+    if "radar_k" in target and target["radar_k"] is not None:
+        target["radar_k"] = F.hflip(target["radar_k"])
 
     return flipped_image, target
 
@@ -137,6 +147,11 @@ def resize(image, target, size, max_size=None):
         target['masks'] = interpolate(
             target['masks'][:, None].float(), size, mode="nearest")[:, 0] > 0.5
 
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.resize(target["tir"], size)
+    if "radar_k" in target and target["radar_k"] is not None:
+        target["radar_k"] = F.resize(target["radar_k"], size)
+
     return rescaled_image, target
 
 
@@ -150,6 +165,10 @@ def pad(image, target, padding):
     target["size"] = torch.tensor(padded_image[::-1])
     if "masks" in target:
         target['masks'] = torch.nn.functional.pad(target['masks'], (0, padding[0], 0, padding[1]))
+    if "tir" in target and target["tir"] is not None:
+        target["tir"] = F.pad(target["tir"], (0, 0, padding[0], padding[1]))
+    if "radar_k" in target and target["radar_k"] is not None:
+        target["radar_k"] = F.pad(target["radar_k"], (0, 0, padding[0], padding[1]))
     return padded_image, target
 
 
@@ -247,6 +266,13 @@ class RandomSelect(object):
 
 class ToTensor(object):
     def __call__(self, img, target):
+        if target is None:
+            return F.to_tensor(img), target
+        target = target.copy()
+        if "tir" in target and target["tir"] is not None and not torch.is_tensor(target["tir"]):
+            target["tir"] = F.to_tensor(target["tir"])
+        if "radar_k" in target and target["radar_k"] is not None and not torch.is_tensor(target["radar_k"]):
+            target["radar_k"] = F.to_tensor(target["radar_k"])
         return F.to_tensor(img), target
 
 
@@ -259,12 +285,108 @@ class RandomErasing(object):
         return self.eraser(img), target
 
 
+class ModalityDropout(object):
+    def __init__(self, p=0.3):
+        self.p = p
+
+    def __call__(self, img, target):
+        if target is None or self.p <= 0:
+            return img, target
+        if "tir" in target and target["tir"] is not None and random.random() < self.p:
+            target = target.copy()
+            tir = target["tir"]
+            if torch.is_tensor(tir):
+                target["tir"] = torch.zeros_like(tir)
+                target["tir_valid"] = torch.tensor(0.0, dtype=tir.dtype, device=tir.device)
+            else:
+                target["tir"] = PIL.Image.new("L", img.size, 0)
+                target["tir_valid"] = torch.tensor(0.0)
+        return img, target
+
+
+class RadarModalityDropout(object):
+    def __init__(self, p=0.3):
+        self.p = p
+
+    def __call__(self, img, target):
+        if target is None or self.p <= 0:
+            return img, target
+        if "radar_k" in target and target["radar_k"] is not None and random.random() < self.p:
+            target = target.copy()
+            radar_k = target["radar_k"]
+            if torch.is_tensor(radar_k):
+                target["radar_k"] = torch.zeros_like(radar_k)
+                target["radar_valid"] = torch.tensor(0.0, dtype=radar_k.dtype, device=radar_k.device)
+            else:
+                target["radar_k"] = None
+                target["radar_valid"] = torch.tensor(0.0)
+        return img, target
+
+
 class Normalize(object):
-    def __init__(self, mean, std):
+    def __init__(self, mean, std, fusion_order=None):
         self.mean = mean
         self.std = std
+        self.fusion_order = fusion_order or ["rgb", "tir", "tir_valid"]
+
+    @staticmethod
+    def _scalar_valid_to_map(valid_value, h, w, dtype, device):
+        if valid_value is None:
+            raise AssertionError("missing modality validity flag")
+        if torch.is_tensor(valid_value):
+            if valid_value.numel() == 1:
+                value = float(valid_value.item())
+            else:
+                value = float(valid_value.float().mean().item())
+        else:
+            value = float(valid_value)
+        value = 1.0 if value >= 0.5 else 0.0
+        return torch.full((1, h, w), value, dtype=dtype, device=device)
 
     def __call__(self, image, target=None):
+        if target is not None and any(k in self.fusion_order for k in ("tir", "tir_valid", "radar_k", "radar_valid")):
+            target = target.copy()
+            h, w = image.shape[-2:]
+            parts = []
+            modalities = {}
+            for key in self.fusion_order:
+                if key == "rgb":
+                    parts.append(image)
+                    modalities["rgb"] = image
+                elif key == "tir":
+                    tir = target.pop("tir", None)
+                    if tir is None:
+                        tir = torch.zeros((1, h, w), dtype=image.dtype, device=image.device)
+                    parts.append(tir)
+                    modalities["tir"] = tir
+                elif key == "tir_valid":
+                    tir_valid = target.pop("tir_valid", None)
+                    tir_valid_map = self._scalar_valid_to_map(tir_valid, h, w, image.dtype, image.device)
+                    parts.append(tir_valid_map)
+                    modalities["tir_valid"] = tir_valid_map
+                    target["tir_valid"] = tir_valid_map
+                elif key == "radar_k":
+                    radar_k = target.pop("radar_k", None)
+                    if radar_k is None:
+                        radar_k = torch.zeros((4, h, w), dtype=image.dtype, device=image.device)
+                    parts.append(radar_k)
+                    modalities["radar_k"] = radar_k
+                elif key == "radar_valid":
+                    radar_valid = target.pop("radar_valid", None)
+                    radar_valid_map = self._scalar_valid_to_map(radar_valid, h, w, image.dtype, image.device)
+                    parts.append(radar_valid_map)
+                    modalities["radar_valid"] = radar_valid_map
+                    target["radar_valid"] = radar_valid_map
+                else:
+                    raise AssertionError(f"unsupported fusion key: {key}")
+            image = torch.cat(parts, dim=0)
+            target["modalities"] = modalities
+
+        if len(self.mean) != image.shape[0] or len(self.std) != image.shape[0]:
+            raise AssertionError(
+                f"normalize mean/std length mismatch: got mean={len(self.mean)} std={len(self.std)} "
+                f"for channels={image.shape[0]}"
+            )
         image = F.normalize(image, mean=self.mean, std=self.std)
         if target is None:
             return image, None
