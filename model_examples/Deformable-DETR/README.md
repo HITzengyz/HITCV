@@ -93,8 +93,8 @@ coco_path/
 - 在模型根目录下运行训练脚本
 
 ```shell
-bash test/train_8p_full.sh --data_path='.data/coco'		# 替换成你的coco数据集路径，进行 8 卡训练
-bash test/train_8p_performance.sh --data_path='.data/coco'		# 替换成你的coco数据集路径，进行 8 卡性能测试
+bash test/train_8p_full.sh --data_path='./data'		# 替换成你的coco数据集根目录，进行 8 卡训练
+bash test/train_8p_performance.sh --data_path='./data'		# 替换成你的coco数据集根目录，进行 8 卡性能测试
 ```
 
 训练脚本参数说明：
