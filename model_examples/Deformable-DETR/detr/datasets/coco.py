@@ -356,7 +356,7 @@ class CocoDetection(TvCocoDetection):
                 tir_valid = 0.0
         return tir, torch.tensor(tir_valid, dtype=torch.float32)
 
-    def _load_radar_with_valid(self, img_info, image_id, width, height):
+    '''def _load_radar_with_valid(self, img_info, image_id, width, height):
         radar = torch.zeros((self.radar_channels, height, width), dtype=torch.float32)
         radar_valid = torch.tensor(0.0, dtype=torch.float32)
         if not self.waterscenes_mode:
@@ -396,7 +396,7 @@ class CocoDetection(TvCocoDetection):
             )
             radar = torch.zeros((self.radar_channels, height, width), dtype=torch.float32)
             radar_valid = torch.tensor(0.0, dtype=torch.float32)
-        return radar, radar_valid
+        return radar, radar_valid'''
 
     def __getitem__(self, idx):
         img, target = super(CocoDetection, self).__getitem__(idx)
@@ -405,20 +405,18 @@ class CocoDetection(TvCocoDetection):
         img, target = self.prepare(img, target)
         img_info = self.coco.loadImgs(image_id)[0]
         tir, tir_valid = self._load_tir_with_valid(img_info, image_id, img)
-        radar_k, radar_valid = self._load_radar_with_valid(img_info, image_id, img.width, img.height)
+        #radar_k, radar_valid = self._load_radar_with_valid(img_info, image_id, img.width, img.height)
         target["tir"] = tir
         target["tir_valid"] = tir_valid
-        if self.waterscenes_mode:
-            target["radar_k"] = radar_k
-            target["radar_valid"] = radar_valid
+        #if self.waterscenes_mode:
+            #target["radar_k"] = radar_k
+            #target["radar_valid"] = radar_valid
             # Preserve a WaterScenes-local modality contract while reusing legacy keys in transforms.
-            target["modalities"] = {
-                "rgb": img,
-                "tir": tir,
-                "tir_valid": tir_valid,
-                "radar_k": radar_k,
-                "radar_valid": radar_valid,
-            }
+        target["modalities"] = {
+            "rgb": img,
+            "tir": tir,
+            "tir_valid": tir_valid
+        }
         if self._transforms is not None:
             img, target = self._transforms(img, target)
         return img, target
@@ -461,8 +459,8 @@ class ConvertCocoPolysToMask(object):
         boxes[:, 2:] += boxes[:, :2]
         boxes[:, 0::2].clamp_(min=0, max=w)
         boxes[:, 1::2].clamp_(min=0, max=h)
-
-        classes = [obj["category_id"] for obj in anno]
+#训练标签映射为0-6
+        classes = [obj["category_id"] - 1 for obj in anno]
         classes = torch.tensor(classes, dtype=torch.int64)
 
         if self.return_masks:
@@ -525,14 +523,14 @@ def make_coco_transforms(image_set, args=None):
         radar_std = list(getattr(args, "radar_std", [1.0, 1.0, 1.0, 1.0]))
         use_waterscenes_modalities = bool(getattr(args, "use_waterscenes_modalities", False))
 
-    if use_waterscenes_modalities:
-        mean = [0.485, 0.456, 0.406, tir_mean, 0.0] + radar_mean + [0.0]
-        std = [0.229, 0.224, 0.225, tir_std, 1.0] + radar_std + [1.0]
-        fusion_order = ["rgb", "tir", "tir_valid", "radar_k", "radar_valid"]
-    else:
-        mean = [0.485, 0.456, 0.406, tir_mean, 0.0]
-        std = [0.229, 0.224, 0.225, tir_std, 1.0]
-        fusion_order = ["rgb", "tir", "tir_valid"]
+    #if use_waterscenes_modalities:
+        #mean = [0.485, 0.456, 0.406, tir_mean, 0.0] + radar_mean + [0.0]
+        #std = [0.229, 0.224, 0.225, tir_std, 1.0] + radar_std + [1.0]
+        #fusion_order = ["rgb", "tir", "tir_valid"]
+    #else:
+    mean = [0.485, 0.456, 0.406, tir_mean, 0.0]
+    std = [0.229, 0.224, 0.225, tir_std, 1.0]
+    fusion_order = ["rgb", "tir", "tir_valid"]
 
     normalize = T.Compose([
         T.ToTensor(),
@@ -553,13 +551,15 @@ def make_coco_transforms(image_set, args=None):
             ),
             T.RandomResize(scales, max_size=1333),
             T.ModalityDropout(p=tir_dropout),
-            T.RadarModalityDropout(p=radar_dropout),
+
             normalize,
         ])
 
     if image_set == 'val':
         return T.Compose([
             T.RandomResize([800], max_size=1333),
+            T.ModalityDropout(p=tir_dropout),
+  
             normalize,
         ])
 
@@ -576,8 +576,8 @@ def build(image_set, args):
     waterscenes_train = root / "instances_train.json"
     waterscenes_val = root / "instances_val.json"
     tir_root = root / "WaterScenes_Fake_IR_Final"
-    radar_root = root / "radar"
-    calib_root = root / "calib"
+    radar_root = None
+    calib_root = None
     waterscenes_mode = False
     if coco_train.exists():
         PATHS = {
@@ -601,17 +601,17 @@ def build(image_set, args):
         waterscenes_mode = True
         if not tir_root.exists():
             tir_root = None
-        if not radar_root.exists():
+        if radar_root is not None and not radar_root.exists():
             radar_root = None
-        if not calib_root.exists():
+        if calib_root is not None and not calib_root.exists():
             calib_root = None
         radar_channels = int(getattr(args, "radar_channels", 4))
-        setattr(args, "use_waterscenes_modalities", True)
-        setattr(args, "radar_channels", radar_channels)
-        setattr(args, "modality_order", ["rgb", "tir", "tir_valid", "radar_k", "radar_valid"])
+        setattr(args, "use_waterscenes_modalities", False)
+        #setattr(args, "radar_channels", radar_channels)
+        setattr(args, "modality_order", ["rgb", "tir", "tir_valid"])
         setattr(args, "tir_valid_channel_idx", 4)
-        setattr(args, "radar_valid_channel_idx", 5 + radar_channels)
-        setattr(args, "in_channels", 5 + radar_channels + 1)
+        setattr(args, "radar_valid_channel_idx", -1)
+        setattr(args, "in_channels", 5 )
     else:
         raise FileNotFoundError(
             "Unsupported COCO layout. Expected either COCO-2017 layout "

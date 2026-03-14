@@ -15,6 +15,7 @@
 - 原始代码仓库：https://github.com/fundamentalvision/Deformable-DETR
 - commit id：11169a60c33333af00a4849f1808023eba96a931
 - 昇腾适配代码仓库：https://gitee.com/ascend/DrivingSDK/tree/master/model_examples/Deformable-DETR
+- 代码导读（核心/非核心边界）：[`detr/docs/codebase_orientation.md`](./detr/docs/codebase_orientation.md)
 
 ## 支持的任务列表
 
@@ -92,8 +93,8 @@ coco_path/
 - 在模型根目录下运行训练脚本
 
 ```shell
-bash test/train_8p_full.sh --data_path='.data/coco'		# 替换成你的coco数据集路径，进行 8 卡训练
-bash test/train_8p_performance.sh --data_path='.data/coco'		# 替换成你的coco数据集路径，进行 8 卡性能测试
+bash test/train_8p_full.sh --data_path='./data'		# 替换成你的coco数据集根目录，进行 8 卡训练
+bash test/train_8p_performance.sh --data_path='./data'		# 替换成你的coco数据集根目录，进行 8 卡性能测试
 ```
 
 训练脚本参数说明：
